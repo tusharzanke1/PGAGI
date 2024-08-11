@@ -1,24 +1,19 @@
 import asyncio
 
-from langchain import hub
-from langchain.agents import (AgentExecutor, AgentType, create_react_agent,
-                              initialize_agent)
-
-from agents.base_agent import BaseAgent
-from agents.conversational.output_parser import ConvoOutputParser
-from agents.conversational.streaming_aiter import AsyncCallbackHandler
-from agents.handle_agent_errors import handle_agent_error
+from xagent import XAgent, XAgentExecutor, XAgentConfig, XAgentCallbackHandler, XAgentErrorHandling
+from xagent.tools import XSerpGoogleSearch, speech_to_text, text_to_speech
+from xagent.memory import XAgentMemory
+from xagent.output_parser import XAgentOutputParser
+from xagent.streaming_aiter import XAgentAsyncCallbackHandler
 from config import Config
 from memory.zep.zep_memory import ZepMemory
 from postgres import PostgresChatMessageHistory
 from services.pubsub import ChatPubSubService
 from services.run_log import RunLogsManager
-from services.voice import speech_to_text, text_to_speech
 from typings.agent import AgentWithConfigsOutput
 from typings.config import AccountSettings, AccountVoiceSettings
 from utils.model import get_llm
 from utils.system_message import SystemMessageBuilder
-
 
 class ConversationalAgent(BaseAgent):
     async def run(
@@ -35,7 +30,7 @@ class ConversationalAgent(BaseAgent):
         run_logs_manager: RunLogsManager,
         pre_retrieved_context: str,
     ):
-        memory = ZepMemory(
+        memory = XAgentMemory(
             session_id=str(self.session_id),
             url=Config.ZEP_API_URL,
             api_key=Config.ZEP_API_KEY,
@@ -62,7 +57,7 @@ class ConversationalAgent(BaseAgent):
                 agent_with_configs,
             )
 
-            streaming_handler = AsyncCallbackHandler()
+            streaming_handler = XAgentAsyncCallbackHandler()
 
             llm.streaming = True
             # llm.callbacks = [
@@ -79,16 +74,23 @@ class ConversationalAgent(BaseAgent):
             #     handle_parsing_errors="Check your output and make sure it conforms!",
             #     agent_kwargs={
             #         "system_message": system_message,
-            #         "output_parser": ConvoOutputParser(),
+            #         "output_parser": XAgentOutputParser(),
             #     },
             #     callbacks=[run_logs_manager.get_agent_callback_handler()],
             # )
 
-            agentPrompt = hub.pull("hwchase17/react")
+            agent = XAgent(
+                model_name="gpt-3.5-turbo",
+                temperature=0,
+                tools=tools,
+                system_message=system_message,
+                output_parser=XAgentOutputParser(),
+                max_iterations=5,
+                verbose=True,
+                handle_parsing_errors="Check your output and make sure it conforms!",
+            )
 
-            agent = create_react_agent(llm, tools, prompt=agentPrompt)
-
-            agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
+            agent_executor = XAgentExecutor(agent=agent, tools=tools, verbose=True)
 
             chunks = []
             final_answer_detected = False
@@ -102,7 +104,8 @@ class ConversationalAgent(BaseAgent):
                     content = event["data"]["chunk"].content
                     if content:
                         chunks.append(content)
-                        # Check if the last three elements in chunks, when stripped, are "Final", "Answer", and ":"
+                        # Check if the last three elements in chunks,
+                        # when stripped, are "Final", "Answer", and ":"
                         if (
                             len(chunks) >= 3
                             and chunks[-3].strip() == "Final"
@@ -118,7 +121,8 @@ class ConversationalAgent(BaseAgent):
             full_response = "".join(chunks)
             final_answer_index = full_response.find("Final Answer:")
             if final_answer_index != -1:
-                # Add the length of the phrase "Final Answer:" and any subsequent whitespace or characters you want to skip
+                # Add the length of the phrase "Final Answer:"
+                # and any subsequent whitespace or characters you want to skip
                 start_index = final_answer_index + len("Final Answer:")
                 # Optionally strip leading whitespace
                 res = full_response[start_index:].lstrip()
@@ -126,7 +130,7 @@ class ConversationalAgent(BaseAgent):
                 res = "Final Answer not found in response."
 
         except Exception as err:
-            res = handle_agent_error(err)
+            res = XAgentErrorHandling.handle_agent_error(err)
 
             memory.save_context(
                 {
@@ -147,7 +151,7 @@ class ConversationalAgent(BaseAgent):
                 voice_url = text_to_speech(res, configs, voice_settings)
                 pass
         except Exception as err:
-            res = f"{res}\n\n{handle_agent_error(err)}"
+            res = f"{res}\n\n{XAgentErrorHandling.handle_agent_error(err)}"
 
             yield res
 
@@ -159,3 +163,5 @@ class ConversationalAgent(BaseAgent):
         )
 
         chat_pubsub_service.send_chat_message(chat_message=ai_message)
+
+
