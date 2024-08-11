@@ -1,13 +1,9 @@
 from typing import List, Optional
 
-from langchain.agents import AgentType, initialize_agent
-from langchain.schema import AIMessage, SystemMessage
-from langchain_community.chat_models import ChatOpenAI
-
-from agents.agent_simulations.agent.dialogue_agent import DialogueAgent
-from agents.conversational.output_parser import ConvoOutputParser
+from xagent import XAgent, XAgentExecutor, XAgentConfig, XAgentCallbackHandler, XAgentErrorHandling
+from xagent.memory import XAgentMemory
+from xagent.output_parser import XAgentOutputParser
 from config import Config
-from memory.zep.zep_memory import ZepMemory
 from services.run_log import RunLogsManager
 from typings.agent import AgentWithConfigsOutput
 
@@ -18,7 +14,7 @@ class DialogueAgentWithTools(DialogueAgent):
         name: str,
         agent_with_configs: AgentWithConfigsOutput,
         system_message: SystemMessage,
-        model: ChatOpenAI,
+        model: XAgent,  # Replace ChatOpenAI with XAgent
         tools: List[any],
         session_id: str,
         sender_name: str,
@@ -39,21 +35,21 @@ class DialogueAgentWithTools(DialogueAgent):
         and returns the message string
         """
 
-        memory: ZepMemory
+        memory: XAgentMemory
 
         # FIXME: This is a hack to get the memory working
-        # if self.is_memory:
-        memory = ZepMemory(
-            session_id=self.session_id,
-            url=Config.ZEP_API_URL,
-            api_key=Config.ZEP_API_KEY,
-            memory_key="chat_history",
-            return_messages=True,
-        )
+        if self.is_memory:
+            memory = XAgentMemory(
+                session_id=self.session_id,
+                url=Config.ZEP_API_URL,
+                api_key=Config.ZEP_API_KEY,
+                memory_key="chat_history",
+                return_messages=True,
+            )
 
-        memory.human_name = self.sender_name
-        memory.ai_name = self.agent_with_configs.agent.name
-        memory.auto_save = False
+            memory.human_name = self.sender_name
+            memory.ai_name = self.agent_with_configs.agent.name
+            memory.auto_save = False
         # else:
         #     memory = ConversationBufferMemory(
         #         memory_key="chat_history", return_messages=True
@@ -65,23 +61,24 @@ class DialogueAgentWithTools(DialogueAgent):
             self.model.callbacks = [self.run_logs_manager.get_agent_callback_handler()]
             callbacks.append(self.run_logs_manager.get_agent_callback_handler())
 
-        agent = initialize_agent(
-            self.tools,
-            self.model,
-            agent=AgentType.CHAT_CONVERSATIONAL_REACT_DESCRIPTION,
+        agent = XAgent(
+            model_name="gpt-3.5-turbo",
+            temperature=0,
+            tools=self.tools,
+            system_message=self.system_message.content,
+            output_parser=XAgentOutputParser(),
+            max_iterations=5,
             verbose=True,
-            handle_parsing_errors=True,
+            handle_parsing_errors="Check your output and make sure it conforms!",
             memory=memory,
             callbacks=callbacks,
-            agent_kwargs={
-                "system_message": self.system_message.content,
-                "output_parser": ConvoOutputParser(),
-            },
         )
+
+        agent_executor = XAgentExecutor(agent=agent, tools=self.tools, verbose=True)
 
         prompt = "\n".join(self.message_history + [self.prefix])
 
-        res = agent.run(input=prompt)
+        res = agent_executor.run(input=prompt)
 
         # FIXME: is memory
         # memory.save_ai_message(res)
